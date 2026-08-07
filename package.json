@@ -1,0 +1,13 @@
+{
+  "name": "fluentflow-vocab",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "node scripts/build-vocab-pages.mjs",
+    "vercel-build": "npm run build"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}
