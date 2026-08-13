@@ -33,26 +33,29 @@ async function loadNativeIndex(language) {
   return byMeaning;
 }
 
-function toWordEntry(entry, nativeIndex) {
+function toWordEntry(entry, nativeIndexes) {
   const firstExample = entry.meanings?.flatMap((meaning) => meaning.examples ?? [])[0];
   const englishTranslation = (entry.meanings ?? []).map((meaning) => meaning.translation).filter(Boolean).join(";");
-  const candidates = new Map();
-  for (const meaning of entry.meanings ?? []) {
-    for (const token of meaning.translation?.split(/[;,/|]/) ?? []) {
-      for (const candidate of nativeIndex.get(`${entry.pos ?? ""}:${normalizeMeaning(token)}`) ?? []) {
-        const current = candidates.get(candidate.word);
-        candidates.set(candidate.word, { ...candidate, score: (current?.score ?? 0) + 1 });
+  const translations = {};
+  for (const [language, nativeIndex] of Object.entries(nativeIndexes)) {
+    const candidates = new Map();
+    for (const meaning of entry.meanings ?? []) {
+      for (const token of meaning.translation?.split(/[;,/|]/) ?? []) {
+        for (const candidate of nativeIndex.get(`${entry.pos ?? ""}:${normalizeMeaning(token)}`) ?? []) {
+          const current = candidates.get(candidate.word);
+          candidates.set(candidate.word, { ...candidate, score: (current?.score ?? 0) + 1 });
+        }
       }
     }
+    const native = [...candidates.values()].sort((a, b) => b.score - a.score || a.frequency - b.frequency)[0];
+    if (native) translations[language] = { translation: native.word, example: native.example };
   }
-  const native = [...candidates.values()].sort((a, b) => b.score - a.score || a.frequency - b.frequency)[0];
   return {
     word: entry.word,
     pos: entry.pos ?? "",
     cefr_level: entry.cefr_level ?? "UNKNOWN",
     english_translation: englishTranslation,
-    native_translation_fr: native?.word ?? "",
-    example_sentence_native_fr: native?.example ?? "",
+    translations,
     example_sentence_native: firstExample?.native ?? "",
     example_sentence_english: firstExample?.english ?? "",
     gender: entry.gender ?? "",
@@ -99,7 +102,7 @@ async function countByLevel(file) {
   return counts;
 }
 
-async function buildLanguage(language, file, nativeIndex) {
+async function buildLanguage(language, file, nativeIndexes) {
   const counts = await countByLevel(file);
   const pagesByLevel = Object.fromEntries(levels.map((level) => [level, 1]));
   const buckets = Object.fromEntries(levels.map((level) => [level, []]));
@@ -112,7 +115,7 @@ async function buildLanguage(language, file, nativeIndex) {
 
   for await (const line of stream) {
     if (!line) continue;
-    const word = toWordEntry(JSON.parse(line), nativeIndex);
+    const word = toWordEntry(JSON.parse(line), nativeIndexes);
     const level = levels.includes(word.cefr_level) ? word.cefr_level : "UNKNOWN";
     const bucket = buckets[level];
     bucket.push(word);
@@ -149,7 +152,6 @@ async function main() {
   await mkdir(publicRoot, { recursive: true });
 
   const languages = {};
-  const frenchIndex = await loadNativeIndex("fr");
   const files = [
     "ar.jsonl",
     "de.jsonl",
@@ -164,11 +166,12 @@ async function main() {
     "ru.jsonl",
     "zh.jsonl"
   ];
+  const nativeIndexes = Object.fromEntries(await Promise.all(files.map(async (fileName) => [path.basename(fileName, ".jsonl"), await loadNativeIndex(path.basename(fileName, ".jsonl"))])));
 
   for (const fileName of files) {
     const language = path.basename(fileName, ".jsonl");
     console.log(`Building ${language}...`);
-    languages[language] = await buildLanguage(language, path.join(sourceRoot, fileName), frenchIndex);
+    languages[language] = await buildLanguage(language, path.join(sourceRoot, fileName), nativeIndexes);
   }
 
   await writeJson(path.join(publicRoot, "manifest.json"), {
