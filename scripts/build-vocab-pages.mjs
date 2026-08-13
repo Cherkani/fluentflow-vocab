@@ -107,6 +107,7 @@ async function buildLanguage(language, file, nativeIndexes) {
   const pagesByLevel = Object.fromEntries(levels.map((level) => [level, 1]));
   const buckets = Object.fromEntries(levels.map((level) => [level, []]));
   const writtenByLevel = Object.fromEntries(levels.map((level) => [level, 0]));
+  const matchedByLevel = Object.fromEntries(levels.map((level) => [level, {}]));
 
   const stream = readline.createInterface({
     input: createReadStream(file, { encoding: "utf8" }),
@@ -117,6 +118,9 @@ async function buildLanguage(language, file, nativeIndexes) {
     if (!line) continue;
     const word = toWordEntry(JSON.parse(line), nativeIndexes);
     const level = levels.includes(word.cefr_level) ? word.cefr_level : "UNKNOWN";
+    for (const nativeLanguage of Object.keys(word.translations)) {
+      matchedByLevel[level][nativeLanguage] = (matchedByLevel[level][nativeLanguage] ?? 0) + 1;
+    }
     const bucket = buckets[level];
     bucket.push(word);
     writtenByLevel[level] += 1;
@@ -140,6 +144,7 @@ async function buildLanguage(language, file, nativeIndexes) {
         {
           total: counts[level] ?? 0,
           totalPages: Math.ceil((counts[level] ?? 0) / pageSize),
+          availableByNativeLanguage: matchedByLevel[level],
           path: `/entries/${language}/${level}/page-{page}.json`
         }
       ])
