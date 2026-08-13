@@ -11,13 +11,48 @@ const publicRoot = path.join(root, "public");
 const pageSize = Number.parseInt(process.env.PAGE_SIZE ?? "100", 10);
 const levels = ["A1", "A2", "B1", "B2", "C1", "C2", "UNKNOWN"];
 
-function toWordEntry(entry) {
+const meaningAliases = { am: "to be", are: "to be", is: "to be", was: "to be", were: "to be", has: "to have", had: "to have" };
+const normalizeMeaning = (value) => meaningAliases[value.trim().toLowerCase()] ?? value.trim().toLowerCase();
+
+async function loadNativeIndex(language) {
+  const byMeaning = new Map();
+  const stream = readline.createInterface({ input: createReadStream(path.join(sourceRoot, `${language}.jsonl`), { encoding: "utf8" }), crlfDelay: Infinity });
+  for await (const line of stream) {
+    if (!line) continue;
+    const entry = JSON.parse(line);
+    const example = entry.meanings?.flatMap((meaning) => meaning.examples ?? [])[0];
+    for (const meaning of entry.meanings ?? []) {
+      for (const token of meaning.translation?.split(/[;,/|]/) ?? []) {
+        const key = `${entry.pos ?? ""}:${normalizeMeaning(token)}`;
+        const matches = byMeaning.get(key) ?? [];
+        matches.push({ word: entry.word, example: example?.native ?? "", frequency: entry.frequency ?? Number.MAX_SAFE_INTEGER });
+        byMeaning.set(key, matches);
+      }
+    }
+  }
+  return byMeaning;
+}
+
+function toWordEntry(entry, nativeIndex) {
   const firstExample = entry.meanings?.flatMap((meaning) => meaning.examples ?? [])[0];
+  const englishTranslation = (entry.meanings ?? []).map((meaning) => meaning.translation).filter(Boolean).join(";");
+  const candidates = new Map();
+  for (const meaning of entry.meanings ?? []) {
+    for (const token of meaning.translation?.split(/[;,/|]/) ?? []) {
+      for (const candidate of nativeIndex.get(`${entry.pos ?? ""}:${normalizeMeaning(token)}`) ?? []) {
+        const current = candidates.get(candidate.word);
+        candidates.set(candidate.word, { ...candidate, score: (current?.score ?? 0) + 1 });
+      }
+    }
+  }
+  const native = [...candidates.values()].sort((a, b) => b.score - a.score || a.frequency - b.frequency)[0];
   return {
     word: entry.word,
     pos: entry.pos ?? "",
     cefr_level: entry.cefr_level ?? "UNKNOWN",
-    english_translation: (entry.meanings ?? []).map((meaning) => meaning.translation).filter(Boolean).join(";"),
+    english_translation: englishTranslation,
+    native_translation_fr: native?.word ?? "",
+    example_sentence_native_fr: native?.example ?? "",
     example_sentence_native: firstExample?.native ?? "",
     example_sentence_english: firstExample?.english ?? "",
     gender: entry.gender ?? "",
@@ -64,7 +99,7 @@ async function countByLevel(file) {
   return counts;
 }
 
-async function buildLanguage(language, file) {
+async function buildLanguage(language, file, nativeIndex) {
   const counts = await countByLevel(file);
   const pagesByLevel = Object.fromEntries(levels.map((level) => [level, 1]));
   const buckets = Object.fromEntries(levels.map((level) => [level, []]));
@@ -77,7 +112,7 @@ async function buildLanguage(language, file) {
 
   for await (const line of stream) {
     if (!line) continue;
-    const word = toWordEntry(JSON.parse(line));
+    const word = toWordEntry(JSON.parse(line), nativeIndex);
     const level = levels.includes(word.cefr_level) ? word.cefr_level : "UNKNOWN";
     const bucket = buckets[level];
     bucket.push(word);
@@ -114,6 +149,7 @@ async function main() {
   await mkdir(publicRoot, { recursive: true });
 
   const languages = {};
+  const frenchIndex = await loadNativeIndex("fr");
   const files = [
     "ar.jsonl",
     "de.jsonl",
@@ -132,7 +168,7 @@ async function main() {
   for (const fileName of files) {
     const language = path.basename(fileName, ".jsonl");
     console.log(`Building ${language}...`);
-    languages[language] = await buildLanguage(language, path.join(sourceRoot, fileName));
+    languages[language] = await buildLanguage(language, path.join(sourceRoot, fileName), frenchIndex);
   }
 
   await writeJson(path.join(publicRoot, "manifest.json"), {
