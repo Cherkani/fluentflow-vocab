@@ -21,33 +21,38 @@ async function loadNativeIndex(language) {
     if (!line) continue;
     const entry = JSON.parse(line);
     const example = entry.meanings?.flatMap((meaning) => meaning.examples ?? [])[0];
-    for (const meaning of entry.meanings ?? []) {
-      for (const token of meaning.translation?.split(/[;,/|]/) ?? []) {
+    const lookupTokens = language === "en"
+      ? [entry.word]
+      : (entry.meanings ?? []).flatMap((meaning) => meaning.translation?.split(/[;,/|]/) ?? []);
+    for (const token of lookupTokens) {
+      if (!token?.trim()) continue;
         const key = `${entry.pos ?? ""}:${normalizeMeaning(token)}`;
         const matches = byMeaning.get(key) ?? [];
         matches.push({ word: entry.word, example: example?.native ?? "", frequency: entry.frequency ?? Number.MAX_SAFE_INTEGER });
         byMeaning.set(key, matches);
-      }
     }
   }
   return byMeaning;
 }
 
-function toWordEntry(entry, nativeIndexes) {
+function toWordEntry(entry, sourceLanguage, nativeIndexes) {
   const firstExample = entry.meanings?.flatMap((meaning) => meaning.examples ?? [])[0];
   const englishTranslation = (entry.meanings ?? []).map((meaning) => meaning.translation).filter(Boolean).join(";");
   const translations = {};
   for (const [language, nativeIndex] of Object.entries(nativeIndexes)) {
+    if (language === sourceLanguage) continue;
     const candidates = new Map();
-    for (const meaning of entry.meanings ?? []) {
-      for (const token of meaning.translation?.split(/[;,/|]/) ?? []) {
-        for (const candidate of nativeIndex.get(`${entry.pos ?? ""}:${normalizeMeaning(token)}`) ?? []) {
-          const current = candidates.get(candidate.word);
-          candidates.set(candidate.word, { ...candidate, score: (current?.score ?? 0) + 1 });
-        }
+    const lookupTokens = sourceLanguage === "en"
+      ? [entry.word]
+      : (entry.meanings ?? []).flatMap((meaning) => meaning.translation?.split(/[;,/|]/) ?? []);
+    for (const token of lookupTokens) {
+      for (const candidate of nativeIndex.get(`${entry.pos ?? ""}:${normalizeMeaning(token)}`) ?? []) {
+        const current = candidates.get(candidate.word);
+        candidates.set(candidate.word, { ...candidate, score: (current?.score ?? 0) + 1 });
       }
     }
-    const native = [...candidates.values()].sort((a, b) => b.score - a.score || a.frequency - b.frequency)[0];
+    const ranked = [...candidates.values()].sort((a, b) => b.score - a.score || a.frequency - b.frequency);
+    const native = ranked[0] && (ranked.length === 1 || ranked[0].score > ranked[1].score) ? ranked[0] : null;
     if (native) translations[language] = { translation: native.word, example: native.example };
   }
   return {
@@ -116,7 +121,7 @@ async function buildLanguage(language, file, nativeIndexes) {
 
   for await (const line of stream) {
     if (!line) continue;
-    const word = toWordEntry(JSON.parse(line), nativeIndexes);
+    const word = toWordEntry(JSON.parse(line), language, nativeIndexes);
     const level = levels.includes(word.cefr_level) ? word.cefr_level : "UNKNOWN";
     for (const nativeLanguage of Object.keys(word.translations)) {
       matchedByLevel[level][nativeLanguage] = (matchedByLevel[level][nativeLanguage] ?? 0) + 1;
@@ -153,7 +158,8 @@ async function buildLanguage(language, file, nativeIndexes) {
 }
 
 async function main() {
-  await rm(publicRoot, { recursive: true, force: true });
+  await rm(path.join(publicRoot, "entries"), { recursive: true, force: true });
+  await rm(path.join(publicRoot, "manifest.json"), { force: true });
   await mkdir(publicRoot, { recursive: true });
 
   const languages = {};
